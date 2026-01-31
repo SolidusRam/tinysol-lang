@@ -116,6 +116,36 @@ let%test "test_receive_2" = test_exec_fun
   (* Here the test passes, but just because the semantics of Send
      does not properly push frames on the call stack *)
 
+(*test for receive functions declaration*)
+let%test "test_receive_declaration_correct" = test_typecheck
+  "contract C {
+      receive() external payable { }
+  }"
+  true
+
+let%test "test_receive_declaration_with_params" = test_typecheck
+  "contract C {
+      receive(uint x) external payable { }
+  }"
+  false
+
+let%test "test_receive_declaration_not_external" = test_typecheck
+  "contract C {
+      receive() public payable { }
+  }"
+  false
+
+let%test "test_receive_declaration_not_payable" = test_typecheck
+  "contract C {
+      receive() external { }
+  }"
+  false
+let%test "test_receive_declaration_multiple" = test_typecheck
+  "contract C {
+      receive() external payable { }
+      receive() external payable { }
+  }"
+  false
 
 let%test "test_typecheck_mutability_1" = test_typecheck
   "contract C {

@@ -2,6 +2,8 @@
 
 An OCaml interpreter and typechecker for a tiny fragment of Solidity
 
+```Group id: G14``` Matteo Parasuco, Pietro Pillola, Danilo Marras, Marta Podda 
+
 ## Installation
 
 Install [opam](https://opam.ocaml.org/doc/Install.html), the OCaml official package manager. Assuming you're working on Ubuntu:

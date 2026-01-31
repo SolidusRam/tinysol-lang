@@ -7,9 +7,11 @@
 (source
  (github username/reponame))
 
-(authors "Author Name <author@example.com>")
-
-(maintainers "Maintainer Name <maintainer@example.com>")
+(authors "Group id: G14
+          Matteo Parasuco 66469
+          Pietro Pillola 66399
+          Danilo Marras 66408
+          Marta Podda 66517")
 
 (license LICENSE)
 

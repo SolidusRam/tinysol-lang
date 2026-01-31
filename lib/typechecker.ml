@@ -76,6 +76,8 @@ exception EnumDupName of ide
 exception EnumDupOption of ide * ide
 exception MapInLocalDecl of ide * ide
 
+(*exception for Issue 6: The receive() function must be external payable*)
+exception ReceiveFunctionError of ide
 let logfun f s = "(" ^ f ^ ")\t" ^ s 
 
 (* Prettyprinting of typechecker errors *)
@@ -95,6 +97,7 @@ let string_of_typecheck_error = function
 | EnumDupName x -> "enum " ^ x ^ " is declared multiple times"
 | EnumDupOption (x,o) -> "enum option " ^ o ^ " is declared multiple times in enum " ^ x
 | MapInLocalDecl (f,x) -> logfun f "mapping " ^ x ^ " not admitted in local declaration" 
+| ReceiveFunctionError f -> logfun f "receive function declaration error"
 | ex -> Printexc.to_string ex
 
 let exprtype_of_decltype = function
@@ -463,6 +466,9 @@ let rec typecheck_cmd (f : ide) (edl : enum_decl list) (vdl : all_var_decls) = f
 
     | Return(_) -> failwith "TODO: Return"
 
+(*this function return true if the receive function is declared correctly*)
+let receive_function (local_var : local_var_decl list) (v : visibility_t) (m : fun_mutability_t) (r : base_type list) : bool =
+  if List.length local_var = 0 && v = External && m = Payable && r = [] then true else false
 
 let typecheck_fun (edl : enum_decl list) (vdl : var_decl list) = function
   | Constr (al,c,_) ->
@@ -471,12 +477,16 @@ let typecheck_fun (edl : enum_decl list) (vdl : var_decl list) = function
       typecheck_local_decls "constructor" al
       >> 
       typecheck_cmd "constructor" edl (merge_var_decls vdl al) c
-  | Proc (f,al,c,_,__,_) ->
+  | Proc (f,al,c, visibility,mutability,return_list) ->
       no_dup_local_var_decls f al
       >> 
       typecheck_local_decls f al
       >>
       typecheck_cmd f edl (merge_var_decls vdl al) c
+      >>
+      if f = "receive" then 
+        if receive_function al visibility mutability return_list then Ok() else Error [ReceiveFunctionError f]
+      else Ok()
 
 (* dup_first: finds the first duplicate in a list *)
 let rec dup_first (l : 'a list) : 'a option = match l with 
