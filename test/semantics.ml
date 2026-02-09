@@ -11,7 +11,7 @@ let test_exec_cmd (c,n_steps,var,exp_val) =
   c
   |> parse_cmd
   |> blockify_cmd (* TODO: enumify? *)
-  |> fun c -> exec_cmd n_steps c (push_callstack {callee="0xC"; locals=[];} init_sysstate)
+  |> fun c -> exec_cmd n_steps c (push_callstack {callee="0xC"; locals=[]; mutability = NonPayable} init_sysstate)
   |> fun t -> match t with
   | St st -> Option.get (lookup_var var st) = exp_val
   | CmdSt(_,st) -> Option.get (lookup_var var st) = exp_val
@@ -90,7 +90,7 @@ let test_exec_tx (src: string) (txl: string list) (els : string list) =
   |> deploy_contract { txsender="0xA"; txto="0xC"; txfun="constructor"; txargs=[]; txvalue=0; } src 
   |> exec_tx_list 1000 txl 
   |> fun st -> List.map (fun x -> x |> parse_expr |> eval_expr 
-      { st with callstack = [{ callee = "0xC"; locals = []}] } ) els 
+      { st with callstack = [{ callee = "0xC"; locals = []; mutability = NonPayable}] } ) els 
   |> List.for_all (fun v -> v = Bool true)
 
 let c1 = "contract C {
@@ -355,7 +355,7 @@ let test_exec_constructor (src: string) (value: int) (args: exprval list) (els :
   |> faucet "0xA" 100
   |> deploy_contract { txsender="0xA"; txto="0xC"; txfun="constructor"; txargs=args; txvalue=value; } src 
   |> fun st -> List.map (fun x -> x |> parse_expr |> eval_expr 
-      { st with callstack = [{ callee = "0xC"; locals = []}] } ) els 
+      { st with callstack = [{ callee = "0xC"; locals = []; mutability = NonPayable}] } ) els 
   |> List.for_all (fun v -> v = Bool true)
 
 let%test "test_constructor_1" = test_exec_constructor
@@ -431,7 +431,7 @@ let test_exec_fun (src1: string) (src2: string) (txl : string list) (els : (addr
   |> deploy_contract { txsender="0xA"; txto="0xD"; txfun="constructor"; txargs=[]; txvalue=100; } src2 
   |> exec_tx_list 1000 txl 
   |> fun st -> List.map (fun (a,x) -> x |> parse_expr |> eval_expr 
-    { st with callstack = [ { callee = a; locals = [] } ] }) els 
+    { st with callstack = [ { callee = a; locals = []; mutability = NonPayable} ] }) els 
   |> List.for_all (fun v -> v = Bool true)
 
 let%test "test_proc_1" = test_exec_fun

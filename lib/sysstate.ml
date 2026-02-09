@@ -21,6 +21,9 @@ type account_state = {
 type frame = {
   callee: addr;
   locals: env list;
+
+  (*add fun_mutability on frame*)
+  mutability: fun_mutability_t;
 }
 
 type sysstate = {

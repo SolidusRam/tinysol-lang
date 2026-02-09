@@ -10,25 +10,46 @@ open Utils
 exception TypeError of string
 exception NoRuleApplies
 
+let get_mutability_fun (f : fun_decl) : fun_mutability_t = 
+  match f with
+  | Constr (_,  _, m) -> m
+  | Proc (_, _, _, _, m, _) -> m
+
+(*check if var x is local*)
+let is_local x frame =
+  List.exists (fun env ->
+    try
+      let _ = env x in
+      true        
+    with
+    | _ -> false 
+  ) frame.locals
+
 let rec step_expr (e,st) = match e with
   | e when is_val e -> raise NoRuleApplies
 
-  | This -> ((AddrConst (List.hd(st.callstack)).callee), st)
+  | This -> let first_frame = List.hd st.callstack in 
+            if first_frame.mutability = Pure then failwith "Reverted: pure functions cannot read state" else ((AddrConst (List.hd(st.callstack)).callee), st)
 
-  | BlockNum -> (IntConst st.blocknum, st)
+  | BlockNum -> let first_frame = List.hd st.callstack in 
+            if first_frame.mutability = Pure then failwith "Reverted: pure functions cannot read state"  else (IntConst st.blocknum, st)
 
-  | Var x -> (expr_of_exprval (Option.get (lookup_var x st)), st)  
+  | Var x ->  let first_frame = List.hd st.callstack in 
+              if first_frame.mutability = Pure && not(is_local x first_frame) then failwith "Reverted: pure functions cannot read state" else (expr_of_exprval (Option.get (lookup_var x st)), st)  
 
-  | MapR(Var x,e2) when is_val e2 -> (match Option.get (lookup_var x st) with
-    | Map m -> (expr_of_exprval (m (exprval_of_expr e2)), st)
-    | _ -> failwith "step_expr: wrong type checking of map?")
+  | MapR(Var x,e2) when is_val e2 -> 
+    let first_frame = List.hd st.callstack in 
+    if first_frame.mutability = Pure then failwith "Reverted: pure functions cannot read state" else (match Option.get (lookup_var x st) with
+                                                                                                                                      | Map m -> (expr_of_exprval (m (exprval_of_expr e2)), st)
+                                                                                                                                      | _ -> failwith "step_expr: wrong type checking of map?")
   | MapR(Var x,e2) ->
     let (e2', st') = step_expr (e2, st) in (MapR(Var x,e2'), st')
   | MapR(e1,e2) ->
     let (e1', st') = step_expr (e1, st) in (MapR(e1',e2), st')
 
   | BalanceOf e when is_val e -> 
-    let b = addr_of_expr e in (UintVal (lookup_balance b st), st)
+    let first_frame = List.hd st.callstack in 
+    if first_frame.mutability = Pure then failwith "Reverted: pure functions cannot read state" else let b = addr_of_expr e in (UintVal (lookup_balance b st), st)
   | BalanceOf e -> 
     let (e', st') = step_expr (e, st) in (BalanceOf e', st')
 
@@ -210,7 +231,8 @@ let rec step_expr (e,st) = match e with
     let (e', st') = step_expr (e, st) in (AddrCast(e'), st')    
 
   | PayableCast(e) when is_val e -> 
-      let b = addr_of_expr e in (AddrConst b, st) (* payable cast is only implemented by the type checker *)
+      let first_frame = List.hd st.callstack in 
+      if first_frame.mutability = Pure then failwith "Reverted: pure functions cannot read state" else let b = addr_of_expr e in (AddrConst b, st) (* payable cast is only implemented by the type checker *)
   | PayableCast(e) -> 
     let (e', st') = step_expr (e, st) in (PayableCast(e'), st')    
 
@@ -241,31 +263,39 @@ let rec step_expr (e,st) = match e with
     let txto = addr_of_expr e_to in
     let txvalue  = int_of_expr e_value in
     let txargs = List.map (fun arg -> exprval_of_expr arg) e_args in
-    if lookup_balance txfrom st < txvalue then 
-      failwith ("sender has not sufficient wei balance")
-    else
-    let from_state = 
-      { (st.accounts txfrom) with balance = (st.accounts txfrom).balance - txvalue } in
-    let to_state  = 
-      { (st.accounts txto) with balance = (st.accounts txto).balance + txvalue } in 
-    let fdecl = Option.get (find_fun_in_sysstate st txto f) in  
-    (* setup new callstack frame *)
-    let xl = get_var_decls_from_fun fdecl in
-    let xl',vl' =
-      { ty=VarT(AddrBT false); name="msg.sender"; } :: 
-      { ty=VarT(UintBT); name="msg.value"; } :: xl,
-      Addr txfrom :: 
-      Uint txvalue :: txargs
-    in
-    let fr' = { callee = txto; locals = [bind_fargs_aargs xl' vl'] } in 
-    let st' = { accounts = st.accounts 
-                  |> bind txfrom from_state
-                  |> bind txto to_state; 
-                callstack = fr' :: st.callstack;
-                blocknum = st.blocknum;
-                active = st.active } in
-    let c = get_cmd_from_fun fdecl in
-    (ExecFunCall(c), st')
+
+    let first_frame = List.hd st.callstack in 
+    if first_frame.mutability = Pure && txvalue > 0 then failwith "Reverted: pure function cannot send eth"
+    else (
+
+      if lookup_balance txfrom st < txvalue then 
+        failwith ("sender has not sufficient wei balance")
+      else
+      let from_state = 
+        { (st.accounts txfrom) with balance = (st.accounts txfrom).balance - txvalue } in
+      let to_state  = 
+        { (st.accounts txto) with balance = (st.accounts txto).balance + txvalue } in 
+      let fdecl = Option.get (find_fun_in_sysstate st txto f) in  
+      (* setup new callstack frame *)
+      let xl = get_var_decls_from_fun fdecl in
+      let xl',vl' =
+        { ty=VarT(AddrBT false); name="msg.sender"; } :: 
+        { ty=VarT(UintBT); name="msg.value"; } :: xl,
+        Addr txfrom :: 
+        Uint txvalue :: txargs
+      in
+      
+      if first_frame.mutability = Pure && get_mutability_fun fdecl <> Pure then failwith "Reverted: pure function cannot call not pure function"
+      else (
+        let fr' = { callee = txto; locals = [bind_fargs_aargs xl' vl']; mutability = get_mutability_fun fdecl } in 
+        let st' = { accounts = st.accounts 
+                      |> bind txfrom from_state
+                      |> bind txto to_state; 
+                    callstack = fr' :: st.callstack;
+                    blocknum = st.blocknum;
+                    active = st.active } in
+        let c = get_cmd_from_fun fdecl in
+        (ExecFunCall(c), st') ) )
 
   | FunCall(e_to,f,e_value,e_args) when is_val e_to && is_val e_value -> 
     let (e_args', st') = step_expr_list (e_args, st) in 
@@ -316,7 +346,8 @@ and step_cmd = function
     | Skip -> St st
 
     | Assign(x,e) when is_val e -> 
-        St (update_var st x (exprval_of_expr_typechecked e (type_of_var x st)))
+        let first_frame = List.hd st.callstack in 
+        if first_frame.mutability = Pure && not(is_local x first_frame) then Reverted "Pure function cannot modify state" else St (update_var st x (exprval_of_expr_typechecked e (type_of_var x st)))
         
     | Assign(x,e) -> 
       let (e', st') = step_expr (e, st) in CmdSt(Assign(x,e'), st')
@@ -324,7 +355,8 @@ and step_cmd = function
     | Decons(_) -> failwith "TODO: multiple return values"
 
     | MapW(x,ek,ev) when is_val ek && is_val ev ->
-        St (update_map st x (exprval_of_expr ek) (exprval_of_expr ev))
+        let first_frame = List.hd st.callstack in 
+        if first_frame.mutability = Pure then Reverted "Pure function cannot modify state" else St (update_map st x (exprval_of_expr ek) (exprval_of_expr ev))
     | MapW(x,ek,ev) when is_val ek -> 
       let (ev', st') = step_expr (ev, st) in 
       CmdSt(MapW(x,ek,ev'), st')
@@ -347,18 +379,21 @@ and step_cmd = function
         CmdSt(If(e',c1,c2), st')
 
     | Send(ercv,eamt) when is_val ercv && is_val eamt -> 
-        let rcv = addr_of_expr ercv in 
-        let amt = int_of_expr eamt in
-        let from = (List.hd st.callstack).callee in 
-        let from_bal = (st.accounts from).balance in
-        if from_bal<amt then Reverted "insufficient balance" else
-        let from_state =  { (st.accounts from) with balance = from_bal - amt } in
-        if exists_account st rcv then
-          let rcv_state = { (st.accounts rcv) with balance = (st.accounts rcv).balance + amt } in
-           St { st with accounts = st.accounts |> bind rcv rcv_state |> bind from from_state}
-        else
-          let rcv_state = { balance = amt; storage = botenv; code = None; } in
-          St { st with accounts = st.accounts |> bind rcv rcv_state |> bind from from_state; active = rcv::st.active }
+        let first_frame = List.hd st.callstack in 
+        if first_frame.mutability = Pure then Reverted "Pure function cannot modify state" 
+        else (
+          let rcv = addr_of_expr ercv in 
+          let amt = int_of_expr eamt in
+          let from = (List.hd st.callstack).callee in 
+          let from_bal = (st.accounts from).balance in
+          if from_bal<amt then Reverted "insufficient balance" else
+          let from_state =  { (st.accounts from) with balance = from_bal - amt } in
+          if exists_account st rcv then
+            let rcv_state = { (st.accounts rcv) with balance = (st.accounts rcv).balance + amt } in
+            St { st with accounts = st.accounts |> bind rcv rcv_state |> bind from from_state}
+          else
+            let rcv_state = { balance = amt; storage = botenv; code = None; } in
+            St { st with accounts = st.accounts |> bind rcv rcv_state |> bind from from_state; active = rcv::st.active })
 
     | Send(ercv,eamt) when is_val ercv -> 
         let (eamt', st') = step_expr (eamt, st) in
@@ -409,31 +444,40 @@ and step_cmd = function
         let txto   = addr_of_expr e_to in
         let txvalue  = int_of_expr e_value in
         let txargs = List.map (fun arg -> exprval_of_expr arg) e_args in
-        if lookup_balance txfrom st < txvalue then 
-          Reverted ("sender " ^ txfrom ^ " has not sufficient wei balance")
-        else
-        let from_state = 
-          { (st.accounts txfrom) with balance = (st.accounts txfrom).balance - txvalue } in
-        let to_state  = 
-          { (st.accounts txto) with balance = (st.accounts txto).balance + txvalue } in 
-        let fdecl = Option.get (find_fun_in_sysstate st txto f) in  
-        (* setup new stack frame TODO *)
-        let xl = get_var_decls_from_fun fdecl in
-        let xl',vl' =
-          { ty=VarT(AddrBT false); name="msg.sender"; } :: 
-          { ty=VarT(UintBT); name="msg.value"; } :: xl,
-          Addr txfrom :: 
-          Uint txvalue :: txargs
-        in
-        let fr' = { callee = txto; locals = [bind_fargs_aargs xl' vl'] } in
-        let st' = { accounts = st.accounts 
-                      |> bind txfrom from_state
-                      |> bind txto to_state; 
-                    callstack = fr' :: st.callstack;
-                    blocknum = st.blocknum;
-                    active = st.active } in
-        let c = get_cmd_from_fun fdecl in
-        CmdSt(ExecProcCall(c), st')
+
+        
+        let first_frame = List.hd st.callstack in 
+        if first_frame.mutability = Pure && txvalue > 0 then Reverted "pure function cannot send eth"
+        else (
+
+            if lookup_balance txfrom st < txvalue then 
+              Reverted ("sender " ^ txfrom ^ " has not sufficient wei balance")
+            else
+            let from_state = 
+              { (st.accounts txfrom) with balance = (st.accounts txfrom).balance - txvalue } in
+            let to_state  = 
+              { (st.accounts txto) with balance = (st.accounts txto).balance + txvalue } in 
+            let fdecl = Option.get (find_fun_in_sysstate st txto f) in  
+            (* setup new stack frame TODO *)
+            let xl = get_var_decls_from_fun fdecl in
+            let xl',vl' =
+              { ty=VarT(AddrBT false); name="msg.sender"; } :: 
+              { ty=VarT(UintBT); name="msg.value"; } :: xl,
+              Addr txfrom :: 
+              Uint txvalue :: txargs
+            in
+
+            if first_frame.mutability = Pure &&  get_mutability_fun fdecl <> Pure then Reverted "pure function cannot call not pure function"
+            else (
+                let fr' = { callee = txto; locals = [bind_fargs_aargs xl' vl']; mutability = get_mutability_fun fdecl } in
+                let st' = { accounts = st.accounts 
+                              |> bind txfrom from_state
+                              |> bind txto to_state; 
+                            callstack = fr' :: st.callstack;
+                            blocknum = st.blocknum;
+                            active = st.active } in
+                let c = get_cmd_from_fun fdecl in
+                CmdSt(ExecProcCall(c), st')))
 
     | ProcCall(e_to,f,e_value,e_args) when is_val e_to && is_val e_value -> 
       let (e_args', st') = step_expr_list (e_args, st) in 
@@ -588,7 +632,7 @@ let exec_tx (n_steps : int) (tx: transaction) (st : sysstate) : (sysstate,string
               { ty=VarT(UintBT); name="msg.value"; } :: xl,
               Addr tx.txsender :: Uint tx.txvalue :: tx.txargs
           in
-          let fr' = { callee = tx.txto; locals = [bind_fargs_aargs xl' vl'] } in
+          let fr' = { callee = tx.txto; locals = [bind_fargs_aargs xl' vl']; mutability = m } in
           let st' = { accounts = st.accounts 
                         |> bind tx.txsender sender_state
                         |> bind tx.txto to_state; 
