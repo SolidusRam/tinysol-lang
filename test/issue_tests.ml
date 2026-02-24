@@ -381,3 +381,10 @@ let%test "test_typecheck_funcall_proccall_7" = test_typecheck
       function g() public { this.f(1, true); }
   }"
   false
+
+let%test "test_nested_call" = test_typecheck
+  "contract C {
+    function f(uint x) public pure returns(uint) { return(x); }
+    function g() public { uint x; x = this.f(this.f(1)); }
+  }"
+  true
