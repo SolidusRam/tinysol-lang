@@ -78,11 +78,11 @@ exception MapInLocalDecl of ide * ide
 
 (*exception for Issue 6: The receive() function must be external payable*)
 exception ReceiveFunctionError of ide
-(* Exceptions for function call typechecking *)
-exception UndeclaredFun of ide * ide
-exception ArgCountMismatch of ide * ide * int * int
-exception ReturnCountMismatch of ide * int * int
-exception VoidFunCallAsExpr of ide * ide
+(* Exceptions for Issue 9: Typechecker: functions *)
+exception UndeclaredFun of ide * ide (* exception for not declared function*)
+exception ArgCountMismatch of ide * ide * int * int (* number parameters <> number arguments function *)
+exception ReturnCountMismatch of ide * int * int (* return variable <> return list decl function*)
+exception VoidFunCallAsExpr of ide * ide (* return in void function *)
 let logfun f s = "(" ^ f ^ ")\t" ^ s 
 
 (* Prettyprinting of typechecker errors *)
@@ -200,13 +200,15 @@ let subtype t0 t1 = match t1 with
 (* lookup a function by name in the function declaration list *)
 let lookup_fun (fname : ide) (fdl : fun_decl list) : (local_var_decl list * base_type list) option =
   List.fold_left (fun acc fd -> match acc with
-    | Some _ -> acc
-    | None -> match fd with
+    | Some _ -> acc (*if already found function then return acc and interrupt fold left*)
+    | None -> match fd with 
       | Constr(_) -> None
       | Proc(g, params, _, _, _, ret_types) ->
-        if g = fname then Some (params, ret_types) else None
+        (*if the name matches then returns the list of parameters and the type of the parameters*)
+        if g = fname then Some (params, ret_types) else None 
   ) None fdl
 
+  (*add fdl param in typecheck_expr which represents the list of declared functions*)
 let rec typecheck_expr (f : ide) (edl : enum_decl list) (fdl : fun_decl list) vdl = function
   | BoolConst b -> Ok (BoolConstET b)
 
@@ -404,26 +406,35 @@ let rec typecheck_expr (f : ide) (edl : enum_decl list) (fdl : fun_decl list) vd
   | FunCall(_e_target, fname, _e_value, args) -> 
     (match lookup_fun fname fdl with  (* Check if function name is defined *)
     | None -> Error [UndeclaredFun (f, fname)] (* Function not declared *)
-    | Some (params, ret_tl) ->
+    | Some (params, ret_tl) -> (* else that function is declared *)
+      (* arg_check check that the parameters passed are correct*)
       let arg_check =
-        if List.length args <> List.length params then 
+        if List.length args <> List.length params then (* check if number of args passed is equal to params *)
           Error [ArgCountMismatch (f, fname, List.length params, List.length args)] (* Number of arguments mismatch *)
         else
+          (* Iterates in parallel over passed arguments and expected parameters *)
           List.fold_left2 (fun acc arg_expr (param : local_var_decl) ->
+            (* Obtains the expected type of the parameter from its declaration *)
             let t_param = match param.ty with
               | VarT(bt) -> exprtype_of_decltype bt
               | MapT(btk,btv) -> MapET(exprtype_of_decltype btk, exprtype_of_decltype btv) in
             acc >>
+            (* Infers the type of the passed argument via recursive typecheck *)
             (match typecheck_expr f edl fdl vdl arg_expr with
             | Ok(t_arg) ->
+              (* Checks that the type of the argument is compatible (subtyped) with that of the expected parameter *)
               if subtype t_arg t_param then Ok()
               else Error [TypeError (f, arg_expr, t_arg, t_param)]
             | Error log -> Error log)
           ) (Ok ()) args params in
+    (* check return types function*)
       match ret_tl with
+      (* The function returns a single value: if arg_check is OK, it returns the return type *)
       | [bt] -> (match arg_check with
         | Ok () -> Ok (exprtype_of_decltype bt)
         | Error log -> Error log)
+      (* The function is void: it cannot be used as an expression, so it always fails.
+          If there are also argument errors, they are accumulated *)
       | [] -> (match arg_check with
         | Ok () -> Error [VoidFunCallAsExpr (f, fname)]
         | Error log -> Error (log @ [VoidFunCallAsExpr (f, fname)]))
@@ -442,6 +453,7 @@ let typecheck_local_decls (f : ide) (vdl : local_var_decl list) = List.fold_left
   (Ok ())
   vdl
 
+  (*add fdl param in typecheck_cmd which represents the list of declared functions and Return type list is added*)
 let rec typecheck_cmd (f : ide) (edl : enum_decl list) (fdl : fun_decl list) (ret_types : base_type list) (vdl : all_var_decls) = function 
     | Skip -> Ok ()
 
@@ -508,19 +520,23 @@ let rec typecheck_cmd (f : ide) (edl : enum_decl list) (fdl : fun_decl list) (re
     | Decl(_) -> assert(false) (* should not happen after blockify *)
 
     | ProcCall(_e_target, fname, _e_value, args) ->
-      (match lookup_fun fname fdl with
-      | None -> Error [UndeclaredFun (f, fname)]
-      | Some (params, _ret_tl) ->
-        if List.length args <> List.length params then
+      (match lookup_fun fname fdl with (* Check if function name is defined *)
+      | None -> Error [UndeclaredFun (f, fname)] (* Function not declared *)
+      | Some (params, _ret_tl) ->(* else that function is declared *)
+        if List.length args <> List.length params then (* check if number of args passed is equal to params *)
           Error [ArgCountMismatch (f, fname, List.length params, List.length args)]
         else
+          (* Iterates in parallel over passed arguments and expected parameters *)
           List.fold_left2 (fun acc arg_expr (param : local_var_decl) ->
+            (* Obtains the expected type of the parameter from its declaration *)
             let t_param = match param.ty with
               | VarT(bt) -> exprtype_of_decltype bt
               | MapT(btk,btv) -> MapET(exprtype_of_decltype btk, exprtype_of_decltype btv) in
             acc >>
+             (* Infers the type of the passed argument via recursive typecheck *)
             (match typecheck_expr f edl fdl vdl arg_expr with
             | Ok(t_arg) ->
+              (* Checks that the type of the argument is compatible (subtyped) with that of the expected parameter *)
               if subtype t_arg t_param then Ok()
               else Error [TypeError (f, arg_expr, t_arg, t_param)]
             | Error log -> Error log)
@@ -529,9 +545,10 @@ let rec typecheck_cmd (f : ide) (edl : enum_decl list) (fdl : fun_decl list) (re
     | ExecProcCall(_) -> assert(false) (* should not happen at static time *)
 
     | Return(el) ->
-      if List.length el <> List.length ret_types then
-        Error [ReturnCountMismatch (f, List.length ret_types, List.length el)]
+      if List.length el <> List.length ret_types then (* check that the number of parameters returned is different from the expected one*) 
+        Error [ReturnCountMismatch (f, List.length ret_types, List.length el)] (* if there is a missmatch then return an error*)
       else
+        (* we check in parallel that the data type of the value we return is the same as what we expect *)
         List.fold_left2 (fun acc e bt ->
           let expected_t = exprtype_of_decltype bt in
           acc >>
@@ -545,6 +562,7 @@ let rec typecheck_cmd (f : ide) (edl : enum_decl list) (fdl : fun_decl list) (re
 (*this function return true if the receive function is declared correctly*)
 let receive_function (local_var : local_var_decl list) (v : visibility_t) (m : fun_mutability_t) (r : base_type list) : bool =
   if List.length local_var = 0 && v = External && m = Payable && r = [] then true else false
+
 
 let typecheck_fun (edl : enum_decl list) (fdl : fun_decl list) (vdl : var_decl list) = function
   | Constr (al,c,_) ->
